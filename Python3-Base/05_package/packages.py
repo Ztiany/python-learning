@@ -22,5 +22,5 @@ print(dir(sys))  # 打印一个模块里的元素
 print("dir(pkg.module_a) = ", dir(pkg.module_a))
 
 # 添加导入模块的搜索路径
-# sys.path.append("../01_Basic")
+# sys.path.append("../01_basic")
 # import data_type
