@@ -22,8 +22,8 @@ def upgrade_headings(doc):
 
 
 def main():
-    input_file = 'test.docx'
-    output_file = 'output2.docx'
+    input_file = 'test.practices'
+    output_file = 'output2.practices'
 
     doc = docx.Document(input_file)
     upgrade_headings(doc)
