@@ -54,7 +54,7 @@ def gen():
 
 
 f = gen()
-print(f.__next__()) # 必须先调用 __next__或 send(None)
+print(f.__next__())  # 必须先调用 __next__或 send(None)
 print('send ', f.send('a'))
 print('send ', f.send('b'))
 print('send ', f.send('c'))

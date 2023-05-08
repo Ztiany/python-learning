@@ -29,5 +29,5 @@ def print_function():
 
 
 print(add(100, 200))
-print(add.__name__)
+print("add.__name__ =", add.__name__)
 print_function()  # 原理就是 time_track(print_function)
