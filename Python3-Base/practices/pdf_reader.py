@@ -12,11 +12,14 @@ def read_pdf(path):
             return df
 
 
-pdf_df = read_pdf("demo.pdf")
+pdf_path = "./pdf/Anti-TSHR.pdf"
+# pdf_path = "./pdf/BAP.pdf"
+
+pdf_df = read_pdf(pdf_path)
 print(pdf_df)
 print(pdf_df.loc[4, 1])
 
-with pdfplumber.open("demo.pdf") as pdf:
+with pdfplumber.open(pdf_path) as pdf:
     content = ''
     for i in range(len(pdf.pages)):
         # 读取PDF文档第i+1页
