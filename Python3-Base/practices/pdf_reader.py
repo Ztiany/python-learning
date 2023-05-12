@@ -17,7 +17,7 @@ pdf_path = "./pdf/Anti-TSHR.pdf"
 
 pdf_df = read_pdf(pdf_path)
 print(pdf_df)
-print(pdf_df.loc[4, 1])
+print(pdf_df.loc[4, 1].replace("\n", ""))
 
 with pdfplumber.open(pdf_path) as pdf:
     content = ''
