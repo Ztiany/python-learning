@@ -1,30 +1,164 @@
-import pdfplumber
 import pandas as pd
+import pdfplumber
+import uuid
+import re
 
 
-def read_pdf(path):
-    pdf = pdfplumber.open(path)
-    if len(pdf.pages) > 0:
-        first_page = pdf.pages[0]
+# =========================================================================
+# 公共方法
+# =========================================================================
+
+def drop_newline_character(origin_str):
+    return origin_str.replace("\n", "")
+
+
+def drop_ch_bracket_character(origin_str):
+    return origin_str.replace("（", "").replace("）", "")
+
+
+def read_pdf_to_df(path):
+    pdf_doc = pdfplumber.open(path)
+    if len(pdf_doc.pages) > 0:
+        first_page = pdf_doc.pages[0]
         tables = first_page.extract_tables()
         if len(tables) > 0:
             df = pd.DataFrame(tables[0])
             return df
 
 
-pdf_path = "./pdf/Anti-TSHR.pdf"
-# pdf_path = "./pdf/BAP.pdf"
+def read_pdf_to_list(path):
+    pdf_doc = pdfplumber.open(path)
+    pdf_content = []
+    for i in range(len(pdf_doc.pages)):
+        page = pdf_doc.pages[i]
+        page_content = page.extract_text().split('\n')[:-1]
+        pdf_content = pdf_content + page_content
+    return pdf_content
 
-pdf_df = read_pdf(pdf_path)
-print(pdf_df)
-print(pdf_df.loc[4, 1].replace("\n", ""))
 
-with pdfplumber.open(pdf_path) as pdf:
-    content = ''
-    for i in range(len(pdf.pages)):
-        # 读取PDF文档第i+1页
-        page = pdf.pages[i]
+def is_chinese(c):
+    return 0x4E00 <= ord(c) <= 0x9FA5
 
-        # page.extract_text()函数即读取文本内容，下面这步是去掉文档最下面的页码
-        page_content = '\n'.join(page.extract_text().split('\n')[:-1])
-        print(page_content)
+
+def drop_duplicated_chinese(origin_str):
+    if not should_drop_duplicated_chinese(origin_str):
+        return origin_str
+    # 定义新字符串用于存储结果
+    result = ""
+    last_chinese_index = -1
+    # 遍历原字符串
+    for i in range(0, len(origin_str), 2):
+        if i == len(origin_str) - 1:
+            result += origin_str[i]
+            break
+        if not is_chinese(origin_str[i]) and not is_chinese(origin_str[i + 1]):
+            last_chinese_index = i
+            break
+        if origin_str[i] == origin_str[i + 1]:
+            result += origin_str[i]
+        else:
+            result = result + origin_str[i] + origin_str[i + 1]
+    if last_chinese_index == -1:
+        return result
+    return result + origin_str[last_chinese_index: len(origin_str)]
+
+
+# “粤粤械械注注准准20232400700”这种类型的才去重。
+def should_drop_duplicated_chinese(origin_str):
+    # 定义新字符串用于存储结果
+    all_duplicated_chinese = True
+    # 遍历原字符串
+    for i in range(0, len(origin_str), 2):
+        if i == len(origin_str) - 1 and is_chinese(origin_str[i]):
+            all_duplicated_chinese = False
+            break
+        if not is_chinese(origin_str[i]) and not is_chinese(origin_str[i + 1]):
+            break
+        if is_chinese(origin_str[i]) and not is_chinese(origin_str[i + 1]):
+            all_duplicated_chinese = False
+            break
+        if origin_str[i] != origin_str[i + 1]:
+            all_duplicated_chinese = False
+            break
+    return all_duplicated_chinese
+
+
+# =========================================================================
+# 初始化
+# =========================================================================
+
+pdf_path = "./document/Anti-TSHR.pdf"
+pdf_df = read_pdf_to_df(pdf_path)
+pdf_lines = read_pdf_to_list(pdf_path)
+
+
+# print(pdf_lines)
+# print(pdf_df)
+
+
+# =========================================================================
+# 读取产品信息
+# =========================================================================
+
+def parse_product_name():
+    full_name = drop_newline_character(pdf_df.loc[3, 1])
+    # 使用正则表达式拆分字符串
+    pattern = r'（.+?）'
+    splits = re.split(pattern, full_name)
+    splits = list(filter(lambda x: x != "", splits))
+
+    # 将括号内的内容匹配出来
+    bracket_contents = re.findall(pattern, full_name)
+    bracket_contents = list(map(lambda x: drop_ch_bracket_character(x), bracket_contents))
+
+    return f"{splits[0]}({bracket_contents[0]}){splits[1]}", bracket_contents[0], bracket_contents[1]
+
+
+def parse_product_registration_cer_num():
+    search_str1 = "注册证编号"
+    search_str2 = "注注册册证证编编号号"
+    target = ""
+    for line in pdf_lines:
+        if search_str1 in line or search_str2 in line:
+            target = line
+    if target.isspace():
+        return ""
+    split_target = target.split("：：")
+    if len(split_target) == 0:
+        split_target = target.split("：")
+    if len(split_target) < 1:
+        return ""
+    return drop_duplicated_chinese(split_target[1])
+
+
+def parse_product_manufacturing_cer_num():
+    return ""
+
+
+def parse_product_manufacturer_name():
+    manufacturer_name = drop_newline_character(pdf_df.loc[0, 1])
+    return drop_duplicated_chinese(manufacturer_name)
+
+
+product_guid = uuid.uuid4()
+product_name_zh, product_name_en, product_test_method = parse_product_name()
+product_registration_cer_num = parse_product_registration_cer_num()
+product_manufacturing_cer_num = parse_product_manufacturing_cer_num()
+product_manufacturer_name = parse_product_manufacturer_name()
+
+print(
+    f"product_guid = {product_guid}\n"
+    f"product_name_zh = {product_name_zh}\n"
+    f"product_name_en = {product_name_en}\n"
+    f"product_test_method = {product_test_method}\n"
+    f"product_registration_cer_num = {product_registration_cer_num}\n"
+    f"product_manufacturing_cer_num = {product_manufacturing_cer_num}\n"
+    f"product_manufacturer_name = {product_manufacturer_name}\n"
+)
+
+# =========================================================================
+# 读取产品规格
+# =========================================================================
+print("规格----------------------------------\n", drop_newline_character(pdf_df.loc[4, 1]))
+
+print("成分----------------------------------\n", drop_newline_character(pdf_df.loc[5, 1]))
