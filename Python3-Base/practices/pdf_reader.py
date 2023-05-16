@@ -1,5 +1,6 @@
 import pandas as pd
 import pdfplumber
+import sqlite3
 import uuid
 import re
 
@@ -7,6 +8,23 @@ import re
 # =========================================================================
 # 公共方法
 # =========================================================================
+
+def print_obj_list(divider, the_list):
+    print(divider)
+    for item in the_list:
+        print(item)
+    print()
+
+
+#
+def extract_unit(origin_str):
+    """
+    2×3.5mL to 3.5
+    """
+    x_index = origin_str.index("×")
+    m_index = origin_str.index("m")
+    return origin_str[x_index + 1: m_index]
+
 
 def drop_newline_character(origin_str):
     return origin_str.replace("\n", "")
@@ -92,10 +110,6 @@ pdf_df = read_pdf_to_df(pdf_path)
 pdf_lines = read_pdf_to_list(pdf_path)
 
 
-# print(pdf_lines)
-# print(pdf_df)
-
-
 # =========================================================================
 # 读取产品信息
 # =========================================================================
@@ -140,7 +154,7 @@ def parse_product_manufacturer_name():
     return drop_duplicated_chinese(manufacturer_name)
 
 
-product_guid = uuid.uuid4()
+product_guid = uuid.uuid4().__str__()
 product_name_zh, product_name_en, product_test_method = parse_product_name()
 product_registration_cer_num = parse_product_registration_cer_num()
 product_manufacturing_cer_num = parse_product_manufacturing_cer_num()
@@ -156,9 +170,224 @@ print(
     f"product_manufacturer_name = {product_manufacturer_name}\n"
 )
 
+
 # =========================================================================
 # 读取产品规格
 # =========================================================================
-print("规格----------------------------------\n", drop_newline_character(pdf_df.loc[4, 1]))
 
-print("成分----------------------------------\n", drop_newline_character(pdf_df.loc[5, 1]))
+def parse_R(origin_str):
+    r_str_list = origin_str.replace("装量：", "").split("：")
+    slash_index = r_str_list[1].index("/")
+    return R(r_str_list[0], r_str_list[1][:slash_index])
+
+
+def parse_rspec(origin_str):
+    split = re.split(r"；", origin_str)
+    return RSpec(split[0], list(map(lambda x: parse_R(x), split[1:])))
+
+
+def map_rspec_to_rspec_calibrators(r_list, cal_str):
+    if cal_str != "":
+        return list(map(lambda item: RSpec(item.spec_name + "+校准品", item.r_list), r_list))
+    return []
+
+
+def parse_calibrators_and_compound_str(origin_str):
+    calibrators_part = ""
+    compound_part = ""
+    compound_index = 0
+    if "复溶液" in origin_str:
+        compound_index = origin_str.index("复溶液")
+        compound_part = origin_str[compound_index:]
+    if "校准品" in origin_str:
+        calibrators_part = origin_str[0:compound_index]
+    return calibrators_part, compound_part
+
+
+def c_str_to_num(c_str):
+    return int(c_str.replace("C", ""))
+
+
+def parse_c_str(origin_str):
+    if "-" in origin_str:
+        c_num_list = list(map(lambda s: c_str_to_num(s), origin_str.split("-")))
+        start = c_num_list[0]
+        end = c_num_list[1]
+    else:
+        start = c_str_to_num(origin_str)
+        end = start
+    return start, end
+
+
+def parse_calibrators_str(origin_str):
+    pattern = r"装量：(.*?)：(.*?)\/"
+    matches = re.findall(pattern, origin_str)
+    c_start, c_end = parse_c_str(matches[0][0])
+    return Calibrators(c_start, c_end, matches[0][1])
+
+
+def parse_compound_str(origin_str):
+    if origin_str == "":
+        return ""
+    match = re.search(r'：(.*?)\/', origin_str)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def contains_R_num(origin_str):
+    pattern = r"\(R[0-9]+\)"
+    match = re.search(pattern, origin_str)
+    if match:
+        return True
+    else:
+        return False
+
+
+def drop_component_detail(origin_str):
+    pattern = r"\(R[0-9]+\)"
+    index = origin_str.index("(R")
+    r_num = re.findall(pattern, origin_str)[0].strip("()'")
+    return Component(origin_str[:index], r_num)
+
+
+class RSpec:
+    def __init__(self, spec_name, r_list):
+        self.guid = uuid.uuid4().__str__()
+        self.spec_name = spec_name
+        self.r_list = r_list
+
+    def __str__(self):
+        r_list_str = list(map(lambda x: x.__str__(), self.r_list))
+        return f"spec_name = {self.spec_name}, r_list = {r_list_str}, guid = {self.guid}"
+
+
+class R:
+    def __init__(self, name, volume):
+        self.name = name
+        self.volume = volume
+
+    def __str__(self):
+        return f"name = {self.name}, volume = {self.volume}"
+
+
+class Calibrators:
+    def __init__(self, start, end, volume):
+        self.start = start
+        self.end = end
+        self.volume = volume
+
+    def __str__(self):
+        return f"start = {self.start}, end = {self.end}, volume = {self.volume}"
+
+
+class Component:
+    def __init__(self, name, r_num):
+        self.name = name
+        self.r_num = r_num
+
+    def __str__(self):
+        return f"name = {self.name}, r_num = {self.r_num}"
+
+
+spec_str_list = list(filter(lambda x: x != "", drop_newline_character(pdf_df.loc[4, 1]).split("规格")))
+spec_str_list = [s[1:] for s in spec_str_list]
+r_spec_str_list = list(filter(lambda x: not is_chinese(x[0]), spec_str_list))
+calibrators_str, compound_str = parse_calibrators_and_compound_str(spec_str_list[len(spec_str_list) - 1])
+
+rspec_list = list(map(parse_rspec, r_spec_str_list))
+rspec_calibrators_list = map_rspec_to_rspec_calibrators(rspec_list, calibrators_str)
+calibrators = parse_calibrators_str(calibrators_str)
+compound_volume = parse_compound_str(compound_str)
+component_str_list = list(filter(lambda x: contains_R_num(x), drop_newline_character(pdf_df.loc[5, 1]).split("。")))
+component_list = list(map(lambda x: drop_component_detail(x), component_str_list))
+
+print_obj_list("规格----------------------------------", rspec_list)
+print_obj_list("规格+----------------------------------", rspec_calibrators_list)
+print("校准品----------------------------------\n", calibrators)
+print("复溶液----------------------------------\n", compound_volume)
+print_obj_list("成分----------------------------------", component_list)
+
+
+# =========================================================================
+# 存入数据库
+# =========================================================================
+def save_to_db():
+    conn = sqlite3.connect('meditation_db.db3')
+    cursor = conn.cursor()
+
+    save_product_to_db(cursor)
+    save_specs_to_db(cursor)
+    save_components(cursor, rspec_list)
+    save_components(cursor, rspec_calibrators_list)
+
+    conn.commit()
+    conn.close()
+
+
+def save_components(cursor, the_rspec_list):
+    # ProductSizeComponents
+    component_list_data = []
+    for component in component_list:
+        for spec in the_rspec_list:
+            target_r = find_target_R(component, spec)
+            component_list_data.append((
+                uuid.uuid4().__str__(),
+                spec.guid,
+                component.name,
+                target_r.name,
+                target_r.volume,
+                extract_unit(target_r.volume)
+            ))
+    cursor.executemany(
+        'INSERT INTO ProductSizeComponents '
+        '(Id, ProductSizeId, ComponentName, Code, SizeName, Qty) '
+        'VALUES (?, ?, ?, ?, ?, ?)',
+        component_list_data
+    )
+
+
+def find_target_R(component, spec):
+    for r in spec.r_list:
+        if r.name == component.r_num:
+            return r
+    return None
+
+
+def save_specs_to_db(cursor):
+    size_data_list = list(map(lambda rspec: (
+        rspec.guid, product_guid, "Fake", rspec.spec_name
+    ), rspec_list))
+
+    size_calibrators_data_list = list(map(lambda rspec: (
+        rspec.guid, product_guid, "Fake", rspec.spec_name
+    ), rspec_calibrators_list))
+
+    cursor.executemany(
+        'INSERT INTO ProductSizes (Id, ProductId, Code, Name) VALUES (?, ?, ?, ?)',
+        size_data_list
+    )
+    cursor.executemany(
+        'INSERT INTO ProductSizes (Id, ProductId, Code, Name) VALUES (?, ?, ?, ?)',
+        size_calibrators_data_list
+    )
+
+
+def save_product_to_db(cursor):
+    # Products
+    product_data = (
+        product_guid,
+        product_name_zh,
+        product_name_en,
+        product_test_method,
+        product_registration_cer_num,
+        product_manufacturing_cer_num,
+        product_manufacturer_name
+    )
+    cursor.execute(
+        'INSERT INTO Products (Id, CnName, EnName,MethodName,CorCode,QsCode,CoName) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        product_data
+    )
+
+
+save_to_db()
