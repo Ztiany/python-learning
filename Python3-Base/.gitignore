@@ -1,3 +1,6 @@
 venv
 .idea
 practices/document
+practices/build
+practices/dist
+practices/meditation_db.db3
