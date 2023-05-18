@@ -321,7 +321,14 @@ def parse_c_str(origin_str):
     return start, end
 
 
-def parse_calibrators_str(name, origin_str):
+def parse_calibrators_num(related_spec_name):
+    split = related_spec_name.split("-")
+    if len(split) != 3:
+        return ""
+    return f"JZ-{split[0]}-{split[1]}"
+
+
+def parse_calibrators_str(name, origin_str, related_spec_name):
     if origin_str == "":
         return None
     pattern = r"装量：(.*?)：(.*?)\/"
@@ -331,7 +338,7 @@ def parse_calibrators_str(name, origin_str):
     vn = volume.split("×")[0]
     vi = volume.split("×")[1]
     vc = int((int(vn) / (c_end - c_start + 1)))
-    return Calibrators(name, c_start, c_end, f"{vc}×{vi}")
+    return Calibrators(name, c_start, c_end, f"{vc}×{vi}", parse_calibrators_num(related_spec_name))
 
 
 def parse_compound_str(origin_str):
@@ -393,14 +400,16 @@ class R:
 
 
 class Calibrators:
-    def __init__(self, name, start, end, volume):
+    def __init__(self, name, start, end, volume, num):
+        self.guid = uuid.uuid4().__str__()
         self.name = name
         self.start = start
         self.end = end
         self.volume = volume
+        self.num = num
 
     def __str__(self):
-        return f"name = {self.name} ,start = {self.start}, end = {self.end}, volume = {self.volume}"
+        return f"name = {self.name}, start = {self.start}, end = {self.end}, volume = {self.volume}, guid = {self.guid}, num = {self.num}"
 
 
 class Component:
@@ -425,7 +434,7 @@ r_component_str_list = list(filter(lambda x: contains_R_num(x), all_component_st
 r_component_list = list(map(lambda x: drop_component_detail(x), r_component_str_list))
 calibrators_name = parse_calibrators_name(all_component_str_list)
 
-calibrators = parse_calibrators_str(calibrators_name, calibrators_str)
+calibrators = parse_calibrators_str(calibrators_name, calibrators_str, rspec_list[0].num)
 compound_volume = parse_compound_str(compound_str)
 
 print("读取到【规格】信息：")
@@ -449,6 +458,8 @@ print_obj_list("----------------------------------", r_component_list)
 # =========================================================================
 # 存入数据库
 # =========================================================================
+
+
 def save_to_db():
     conn = sqlite3.connect(dp_path)
     cursor = conn.cursor()
@@ -457,12 +468,25 @@ def save_to_db():
     print()
     print("开始入库...")
     try:
+        # 产品
         save_product_to_db(cursor)
+        # 规格
         save_specs_to_db(cursor)
+        # 成分
         save_components(cursor, rspec_list)
         save_components(cursor, rspec_calibrators_list)
-        save_calibrators(cursor)
-        save_compound(cursor)
+        # 校准品+规格
+        save_calibrators_with_rspec_with_cal(cursor)
+        # 复溶液+规格
+        save_compound_with_rspec_with_cal(cursor)
+
+        # 校准品规格
+        save_calibrators_spec(cursor)
+        # 校准品 + 校准品规格
+        save_component_with_calibrators_spec(cursor)
+        # 复溶液 + 校准品规格
+        save_compound_with_calibrators_spec(cursor)
+
         print()
         print()
         print("入库成功，程序结束")
@@ -475,50 +499,39 @@ def save_to_db():
         conn.close()
 
 
-def save_compound(cursor):
-    if compound_volume == "":
-        return
-    compound_list_data = []
-    for spec in rspec_calibrators_list:
-        compound_list_data.append((
-            uuid.uuid4().__str__(),
-            spec.guid,
-            "复溶液",
-            "复溶液",
-            compound_volume,
-            extract_unit(compound_volume)
-        ))
-
-    cursor.executemany(
-        'INSERT INTO ProductSizeComponents '
-        '(Id, ProductSizeId, ComponentName, Code, SizeName, Qty) '
-        'VALUES (?, ?, ?, ?, ?, ?)',
-        compound_list_data
+def save_product_to_db(cursor):
+    # Products
+    product_data = (
+        product_guid,
+        product_name_zh,
+        product_name_en,
+        product_test_method,
+        product_registration_cer_num,
+        product_manufacturing_cer_num,
+        product_manufacturer_name
+    )
+    cursor.execute(
+        'INSERT INTO Products (Id, CnName, EnName,MethodName,CorCode,QsCode,CoName) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        product_data
     )
 
 
-def save_calibrators(cursor):
-    if calibrators is None:
-        return
-    calibrators_list_data = []
-    for spec in rspec_calibrators_list:
-        index = calibrators.start
-        while index <= calibrators.end:
-            calibrators_list_data.append((
-                uuid.uuid4().__str__(),
-                spec.guid,
-                calibrators.name + "C" + str(index),
-                "C" + str(index),
-                calibrators.volume,
-                extract_unit(calibrators.volume)
-            ))
-            index = index + 1
+def save_specs_to_db(cursor):
+    size_data_list = list(map(lambda rspec: (
+        rspec.guid, product_guid, rspec.num, rspec.spec_name
+    ), rspec_list))
+
+    size_calibrators_data_list = list(map(lambda rspec: (
+        rspec.guid, product_guid, rspec.num, rspec.spec_name
+    ), rspec_calibrators_list))
 
     cursor.executemany(
-        'INSERT INTO ProductSizeComponents '
-        '(Id, ProductSizeId, ComponentName, Code, SizeName, Qty) '
-        'VALUES (?, ?, ?, ?, ?, ?)',
-        calibrators_list_data
+        'INSERT INTO ProductSizes (Id, ProductId, Code, Name) VALUES (?, ?, ?, ?)',
+        size_data_list
+    )
+    cursor.executemany(
+        'INSERT INTO ProductSizes (Id, ProductId, Code, Name) VALUES (?, ?, ?, ?)',
+        size_calibrators_data_list
     )
 
 
@@ -553,39 +566,106 @@ def find_target_R(component, spec):
     return None
 
 
-def save_specs_to_db(cursor):
-    size_data_list = list(map(lambda rspec: (
-        rspec.guid, product_guid, rspec.num, rspec.spec_name
-    ), rspec_list))
-
-    size_calibrators_data_list = list(map(lambda rspec: (
-        rspec.guid, product_guid, rspec.num, rspec.spec_name
-    ), rspec_calibrators_list))
+def save_calibrators_with_rspec_with_cal(cursor):
+    if calibrators is None:
+        return
+    calibrators_list_data = []
+    for spec in rspec_calibrators_list:
+        index = calibrators.start
+        while index <= calibrators.end:
+            calibrators_list_data.append((
+                uuid.uuid4().__str__(),
+                spec.guid,
+                calibrators.name + "C" + str(index),
+                "C" + str(index),
+                calibrators.volume,
+                extract_unit(calibrators.volume)
+            ))
+            index = index + 1
 
     cursor.executemany(
-        'INSERT INTO ProductSizes (Id, ProductId, Code, Name) VALUES (?, ?, ?, ?)',
-        size_data_list
+        'INSERT INTO ProductSizeComponents '
+        '(Id, ProductSizeId, ComponentName, Code, SizeName, Qty) '
+        'VALUES (?, ?, ?, ?, ?, ?)',
+        calibrators_list_data
     )
+
+
+def save_compound_with_rspec_with_cal(cursor):
+    if compound_volume == "":
+        return
+    compound_list_data = []
+    for spec in rspec_calibrators_list:
+        compound_list_data.append((
+            uuid.uuid4().__str__(),
+            spec.guid,
+            "复溶液",
+            "复溶液",
+            compound_volume,
+            extract_unit(compound_volume)
+        ))
+
     cursor.executemany(
-        'INSERT INTO ProductSizes (Id, ProductId, Code, Name) VALUES (?, ?, ?, ?)',
-        size_calibrators_data_list
+        'INSERT INTO ProductSizeComponents '
+        '(Id, ProductSizeId, ComponentName, Code, SizeName, Qty) '
+        'VALUES (?, ?, ?, ?, ?, ?)',
+        compound_list_data
     )
 
 
-def save_product_to_db(cursor):
-    # Products
-    product_data = (
-        product_guid,
-        product_name_zh,
-        product_name_en,
-        product_test_method,
-        product_registration_cer_num,
-        product_manufacturing_cer_num,
-        product_manufacturer_name
+def save_calibrators_spec(cursor):
+    if calibrators is None:
+        return
+    calibrators_spec_data = (
+        calibrators.guid, product_guid, calibrators.num, "校准品"
     )
     cursor.execute(
-        'INSERT INTO Products (Id, CnName, EnName,MethodName,CorCode,QsCode,CoName) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        product_data
+        'INSERT INTO ProductSizes (Id, ProductId, Code, Name) VALUES (?, ?, ?, ?)',
+        calibrators_spec_data
+    )
+
+
+def save_component_with_calibrators_spec(cursor):
+    if calibrators is None:
+        return
+    calibrators_component_list_data = []
+    index = calibrators.start
+    while index <= calibrators.end:
+        calibrators_component_list_data.append((
+            uuid.uuid4().__str__(),
+            calibrators.guid,
+            "校准品" + "C" + str(index),
+            "C" + str(index),
+            calibrators.volume,
+            extract_unit(calibrators.volume)
+        ))
+        index = index + 1
+    cursor.executemany(
+        'INSERT INTO ProductSizeComponents '
+        '(Id, ProductSizeId, ComponentName, Code, SizeName, Qty) '
+        'VALUES (?, ?, ?, ?, ?, ?)',
+        calibrators_component_list_data
+    )
+
+
+def save_compound_with_calibrators_spec(cursor):
+    if calibrators is None:
+        return
+    if compound_volume == "":
+        return
+    compound_data = (
+        uuid.uuid4().__str__(),
+        calibrators.guid,
+        "复溶液",
+        "复溶液",
+        compound_volume,
+        extract_unit(compound_volume)
+    )
+    cursor.execute(
+        'INSERT INTO ProductSizeComponents '
+        '(Id, ProductSizeId, ComponentName, Code, SizeName, Qty) '
+        'VALUES (?, ?, ?, ?, ?, ?)',
+        compound_data
     )
 
 
